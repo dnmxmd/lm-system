@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-lms}
+      POSTGRES_USER: ${DB_USER:-lms}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-lms}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-lms} -d ${DB_NAME:-lms}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-lms}
+      DB_USER: ${DB_USER:-lms}
+      DB_PASSWORD: ${DB_PASSWORD:-lms}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-this-is-at-least-32-bytes-long}
+      # This compose file is the local demo, so the stand-in payment provider is on. It must not
+      # be in a real deployment: the app refuses to start with it enabled outside development.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      ALLOW_SIMULATED_SETTLEMENT: ${ALLOW_SIMULATED_SETTLEMENT:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@lms.local}
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+
+volumes:
+  postgres-data:

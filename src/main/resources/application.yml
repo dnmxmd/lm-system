@@ -1,0 +1,101 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+
+spring:
+  application:
+    name: learning-management-system
+  autoconfigure:
+    # Authentication is token-only; Boot's in-memory user would just print a password at startup.
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:lms}
+    username: ${DB_USER:lms}
+    password: ${DB_PASSWORD:lms}
+    hikari:
+      # Must comfortably exceed the request threads that need a connection plus the async
+      # notification pool below, which draws on the same connections.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # The schema comes from Flyway. Hibernate only checks the two agree.
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+      hibernate.jdbc.batch_size: 25
+  flyway:
+    enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+      repositories:
+        enabled: false
+  cache:
+    type: redis
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      # Without these a hung mail server holds the sending thread for as long as the OS allows.
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+  jackson:
+    default-property-inclusion: non_null
+  task:
+    execution:
+      pool:
+        core-size: 2
+        max-size: 8
+        queue-capacity: 500
+      thread-name-prefix: lms-async-
+
+lms:
+  payments:
+    # The endpoints that stand in for a payment provider let a learner settle their own charge.
+    # Off unless deliberately switched on; the app refuses to start with this true in production.
+    allow-simulated-settlement: ${ALLOW_SIMULATED_SETTLEMENT:false}
+  mail:
+    from: ${MAIL_FROM:no-reply@lms.local}
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    requests: ${RATE_LIMIT_REQUESTS:300}
+    window: ${RATE_LIMIT_WINDOW:1m}
+  security:
+    jwt:
+      # Must be at least 32 bytes. Generate one with: openssl rand -base64 48
+      secret: ${JWT_SECRET:change-me-in-production-this-is-at-least-32-bytes-long}
+      issuer: ${JWT_ISSUER:lms}
+      access-ttl: ${JWT_ACCESS_TTL:PT1H}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"
+  level:
+    com.lms: ${LOG_LEVEL:INFO}

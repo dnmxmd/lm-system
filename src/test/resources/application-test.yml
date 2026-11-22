@@ -1,0 +1,25 @@
+# In-memory stand-ins so the tests need neither Postgres nor Redis. The schema comes from the JPA
+# model, which is also how an entity drifting away from the migration gets noticed.
+spring:
+  datasource:
+    url: jdbc:h2:mem:lms;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    enabled: false
+  cache:
+    type: none
+  mail:
+    host: ""
+
+lms:
+  payments:
+    allow-simulated-settlement: true
+  rate-limit:
+    enabled: false
+  security:
+    jwt:
+      secret: test-secret-key-that-is-definitely-long-enough
