@@ -55,6 +55,12 @@ class ArchitectureTest {
             .should().accessClassesThat().resideInAPackage("com.lms.analytics.repository..")
             .because("reporting storage belongs to the analytics feature");
 
+    @ArchTest
+    static final ArchRule outbox_storage_is_private = noClasses()
+            .that().resideOutsideOfPackage("com.lms.outbox..")
+            .should().accessClassesThat().resideInAPackage("com.lms.outbox.repository..")
+            .because("outbox storage belongs to the outbox feature");
+
     /** One feature's entities are its own; others get a record of the facts they need. */
     @ArchTest
     static final ArchRule features_do_not_share_entities = noClasses()

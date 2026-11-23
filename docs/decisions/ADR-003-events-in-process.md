@@ -17,7 +17,8 @@ deliberately:
 |---|---|---|
 | `AnalyticsService` | `@EventListener` — inside the publisher's transaction | A rolled-back enrolment must not leave a count behind. Counters move by atomic `UPDATE ... SET x = x + 1`, so this adds no contention to the request. |
 | `PaymentService.onEnrollmentCreated` | `@EventListener` — inside the publisher's transaction | Enrolling and raising the charge are all or nothing, and share one database connection. |
-| `NotificationListener` | `@TransactionalEventListener` + `@Async` — after commit, off the request thread | Nobody should be emailed about something that rolled back, and a slow mail server must hold up neither a transaction nor the learner's request. |
+| `OutboxRecorder` | `@EventListener` — inside the publisher's transaction | The event row commits with the change or not at all. See ADR-006. |
+| `NotificationListener` | delivered by `OutboxRelay`, outside any transaction | Nobody should be emailed about something that rolled back, and a slow mail server must hold up neither a transaction nor the learner's request. |
 
 ## What load testing changed
 
@@ -45,5 +46,9 @@ now.
 - Mail failures are logged, not propagated: a notification is not worth undoing an enrolment for.
 - The async notification pool draws on the same connection pool as the request threads, so
   `DB_POOL_SIZE` has to exceed both. It defaults to 20 against an async pool of 8.
-- Events are lost if the process dies between commit and the async listener running. For mail that
-  is acceptable. If it ever is not, the fix is an outbox table — not a queue.
+- Events are no longer lost if the process dies after the commit: they are written to an outbox
+  in the same transaction and delivered by a relay. See ADR-006.
+- Notification listeners are not transactional themselves. They call `RecipientLookup`, which
+  gathers the address and course title in a short transaction of its own and returns a plain
+  record; the mail server is contacted after that connection has gone back to the pool. Holding a
+  transaction open across an SMTP call is how one slow mail server becomes a database outage.

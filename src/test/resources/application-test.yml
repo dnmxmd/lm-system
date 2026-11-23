@@ -16,6 +16,9 @@ spring:
     host: ""
 
 lms:
+  outbox:
+    # Tests call the relay a pass at a time; automatic delivery would race them.
+    auto-delivery: false
   payments:
     allow-simulated-settlement: true
   rate-limit:

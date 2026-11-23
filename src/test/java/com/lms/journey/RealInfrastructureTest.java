@@ -1,6 +1,8 @@
 package com.lms.journey;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.lms.common.security.JwtService;
+import com.lms.common.security.Role;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +41,8 @@ class RealInfrastructureTest {
 
     @Autowired
     private TestRestTemplate http;
+    @Autowired
+    private JwtService jwtService;
 
     @BeforeAll
     static void requireBackingServices() {
@@ -87,6 +91,35 @@ class RealInfrastructureTest {
         JsonNode cached = send(HttpMethod.GET, "/api/v1/courses/" + courseId, null, null, HttpStatus.OK);
 
         assertThat(cached.toString()).doesNotContain(content);
+    }
+
+    @Test
+    void an_event_is_recorded_and_delivered_by_the_relay() throws Exception {
+        String email = "outbox-" + UUID.randomUUID() + "@example.com";
+        send(HttpMethod.POST, "/api/v1/auth/register", """
+                {"email":"%s","password":"hunter2024","fullName":"Outbox Person","role":"STUDENT"}
+                """.formatted(email), null, HttpStatus.CREATED);
+
+        String admin = jwtService.issue(UUID.randomUUID(), "root@example.com", Role.ADMIN).accessToken();
+
+        // Auto-delivery is on outside the unit-test profiles, so the relay should pick this up on
+        // its own. Polled rather than asserted once, because delivery is asynchronous by design.
+        String status = null;
+        for (int attempt = 0; attempt < 40 && !"PUBLISHED".equals(status); attempt++) {
+            JsonNode events = send(HttpMethod.GET, "/api/v1/events?size=100", null, admin, HttpStatus.OK);
+            for (JsonNode event : events.get("content")) {
+                if (event.get("payload").asText().contains(email)) {
+                    status = event.get("status").asText();
+                }
+            }
+            if (!"PUBLISHED".equals(status)) {
+                Thread.sleep(250);
+            }
+        }
+
+        assertThat(status)
+                .as("the relay should have delivered the registration event")
+                .isEqualTo("PUBLISHED");
     }
 
     @Test

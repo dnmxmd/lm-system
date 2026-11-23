@@ -61,6 +61,16 @@ spring:
       thread-name-prefix: lms-async-
 
 lms:
+  outbox:
+    # How often the relay looks for work. It is also nudged after every commit, so this interval
+    # is the recovery path rather than the normal one.
+    poll-interval: ${OUTBOX_POLL_INTERVAL:PT5S}
+    batch-size: ${OUTBOX_BATCH_SIZE:50}
+    max-attempts: ${OUTBOX_MAX_ATTEMPTS:8}
+    # A relay that dies mid-delivery leaves its rows claimed; they are freed after this.
+    claim-timeout: ${OUTBOX_CLAIM_TIMEOUT:PT5M}
+    # Delivered events are kept this long, because the outbox is also the audit trail.
+    retention: ${OUTBOX_RETENTION:P30D}
   payments:
     # The endpoints that stand in for a payment provider let a learner settle their own charge.
     # Off unless deliberately switched on; the app refuses to start with this true in production.
@@ -79,6 +89,13 @@ lms:
       access-ttl: ${JWT_ACCESS_TTL:PT1H}
 
 management:
+  health:
+    mail:
+      # Off by default. Mail is optional here, and Boot registers this indicator whenever the
+      # spring.mail.host property exists at all — even empty — so leaving it on reports the whole
+      # application DOWN because an SMTP server nobody configured cannot be reached. It also opens
+      # a real SMTP connection on every health poll. Turn it on once mail genuinely matters.
+      enabled: ${SMTP_HEALTH_CHECK:false}
   endpoints:
     web:
       exposure:
