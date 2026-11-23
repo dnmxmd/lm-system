@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -46,12 +47,25 @@ public class OutboxStore {
         events.save(OutboxEvent.of(type, payload));
     }
 
+    /**
+     * Takes a lease on whatever is ready to go out, including events whose previous holder has
+     * stopped. Only events this call actually won are returned.
+     */
     @Transactional
-    public List<UUID> claimDue() {
+    public List<ClaimedEvent> claimDue() {
+        Instant now = Instant.now();
+        Instant expiresAt = now.plus(properties.claimTimeout());
         Pageable batch = PageRequest.of(0, properties.batchSize());
-        return events.findDueIds(OutboxStatus.PENDING, Instant.now(), batch).stream()
-                .filter(id -> events.claim(id, OutboxStatus.PENDING, OutboxStatus.CLAIMED) == 1)
-                .toList();
+
+        List<ClaimedEvent> claimed = new ArrayList<>();
+        for (UUID id : events.findClaimableIds(OutboxStatus.PENDING, OutboxStatus.CLAIMED, now, batch)) {
+            UUID claimId = UUID.randomUUID();
+            if (events.claim(id, claimId, expiresAt, now, OutboxStatus.PENDING, OutboxStatus.CLAIMED) == 1) {
+                OutboxEvent event = require(id);
+                claimed.add(new ClaimedEvent(id, claimId, event.getType(), event.getPayload()));
+            }
+        }
+        return claimed;
     }
 
     @Transactional(readOnly = true)
@@ -59,37 +73,47 @@ public class OutboxStore {
         return events.findById(id).orElseThrow(() -> NotFoundException.of("Outbox event", id));
     }
 
-    @Transactional
-    public void markPublished(UUID id) {
-        require(id).markPublished();
-    }
-
-    @Transactional
-    public void recordFailure(UUID id, String error) {
-        OutboxEvent event = require(id);
-        event.recordFailure(error, properties.maxAttempts());
-        if (event.getStatus() == OutboxStatus.FAILED) {
-            log.error("Outbox event {} ({}) gave up after {} attempts: {}",
-                    id, event.getType(), event.getAttempts(), error);
-        }
-    }
-
     /**
-     * Frees events a previous relay claimed and never finished.
-     *
-     * <p>Without this, a process killed mid-delivery leaves its claimed rows stranded: nobody else
-     * will touch them, so the event is as lost as it would have been with no outbox at all.
+     * @return false when the claim is no longer ours — somebody else recovered the event after our
+     *         lease expired, and their result stands rather than ours.
      */
     @Transactional
-    public int releaseStaleClaims() {
-        Instant staleBefore = Instant.now().minus(properties.claimTimeout());
-        List<UUID> stale = events.findStaleClaims(OutboxStatus.CLAIMED, staleBefore,
-                PageRequest.of(0, properties.batchSize()));
-        if (stale.isEmpty()) {
-            return 0;
+    public boolean markPublished(ClaimedEvent claimed) {
+        int updated = events.markPublished(claimed.id(), claimed.claimId(), Instant.now(),
+                OutboxStatus.PUBLISHED);
+        if (updated == 0) {
+            log.warn("Outbox event {} was delivered under a lease that had already expired; "
+                    + "the result is discarded because another relay owns it now", claimed.id());
         }
-        log.warn("Releasing {} outbox events left claimed by a relay that did not finish", stale.size());
-        return events.releaseClaims(stale, OutboxStatus.PENDING);
+        return updated == 1;
+    }
+
+    /** @return false when the claim had already been taken over, as above. */
+    @Transactional
+    public boolean recordFailure(ClaimedEvent claimed, String error) {
+        OutboxEvent event = require(claimed.id());
+        // Worked out on a copy of the current state, then written only if the claim still holds.
+        OutboxEvent projection = OutboxEvent.replayOf(event);
+        projection.recordFailure(error, properties.maxAttempts());
+
+        int updated = events.finishWithFailure(claimed.id(), claimed.claimId(), projection.getStatus(),
+                projection.getAttempts(), projection.getLastError(), projection.getNextAttemptAt());
+        if (updated == 0) {
+            log.warn("Outbox event {} failed under an expired lease; another relay owns it now",
+                    claimed.id());
+            return false;
+        }
+        if (projection.getStatus() == OutboxStatus.FAILED) {
+            log.error("Outbox event {} ({}) gave up after {} attempts: {}",
+                    claimed.id(), event.getType(), projection.getAttempts(), error);
+        }
+        return true;
+    }
+
+    /** Brings a backed-off event forward without clearing its attempt count. */
+    @Transactional
+    public void clearBackoff(UUID id) {
+        require(id).clearBackoff();
     }
 
     @Transactional

@@ -50,9 +50,14 @@ public class EmailService {
         try {
             sender.send(mail);
         } catch (MailException ex) {
-            // A failed notification must not undo the thing it was notifying about, so this is
-            // logged rather than rethrown.
+            // Rethrown on purpose. Swallowing this told the outbox the event had been delivered,
+            // so a send that never happened was marked PUBLISHED and never tried again. Letting it
+            // out is what makes the retry and dead-letter machinery mean anything.
+            //
+            // It cannot undo the thing it was notifying about: the originating transaction
+            // committed long before the relay picked the event up.
             log.warn("Could not send \"{}\" to {}: {}", message.subject(), to, ex.getMessage());
+            throw ex;
         }
     }
 }

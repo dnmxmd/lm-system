@@ -1,7 +1,6 @@
 package com.lms.outbox.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.lms.outbox.model.OutboxEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -10,7 +9,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -47,11 +45,10 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelayString = "${lms.outbox.poll-interval:PT5S}")
     public void scheduledPass() {
-        if (!properties.deliversAutomatically()) {
-            return;
+        if (properties.deliversAutomatically()) {
+            // Expired leases are picked up by claimDue itself, so recovery needs no separate step.
+            deliverDue();
         }
-        store.releaseStaleClaims();
-        deliverDue();
     }
 
     /** Nudged after a commit so delivery does not wait for the next tick. */
@@ -68,10 +65,9 @@ public class OutboxRelay {
             return 0;
         }
         try {
-            List<UUID> claimed = store.claimDue();
             int delivered = 0;
-            for (UUID id : claimed) {
-                if (deliver(id)) {
+            for (ClaimedEvent claimed : store.claimDue()) {
+                if (deliver(claimed)) {
                     delivered++;
                 }
             }
@@ -81,24 +77,24 @@ public class OutboxRelay {
         }
     }
 
-    private boolean deliver(UUID id) {
-        OutboxEvent event = store.require(id);
+    private boolean deliver(ClaimedEvent claimed) {
         try {
-            Object payload = objectMapper.readValue(event.getPayload(),
-                    OutboxEventTypes.classOf(event.getType()));
+            Object payload = objectMapper.readValue(claimed.payload(),
+                    OutboxEventTypes.classOf(claimed.type()));
             for (OutboxConsumer consumer : consumers) {
-                if (consumer.supports(event.getType())) {
+                if (consumer.supports(claimed.type())) {
                     consumer.consume(payload);
                 }
             }
-            store.markPublished(id);
-            return true;
+            // Conditional on still owning the claim: if this relay stalled past its lease and
+            // somebody else took the event over, their result is the one that counts.
+            return store.markPublished(claimed);
         } catch (Exception ex) {
             // Any consumer failing leaves the event to be tried again. Consumers therefore have to
             // tolerate being handed the same event twice.
-            log.warn("Outbox event {} ({}) could not be delivered: {}", id, event.getType(),
+            log.warn("Outbox event {} ({}) could not be delivered: {}", claimed.id(), claimed.type(),
                     ex.getMessage());
-            store.recordFailure(id, ex.toString());
+            store.recordFailure(claimed, ex.toString());
             return false;
         }
     }

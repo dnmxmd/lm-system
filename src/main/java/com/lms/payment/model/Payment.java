@@ -33,7 +33,7 @@ public class Payment {
     @Id
     private UUID id;
 
-    @Column(name = "enrollment_id", nullable = false, unique = true)
+    @Column(name = "enrollment_id", nullable = false)
     private UUID enrollmentId;
 
     @Column(name = "student_id", nullable = false)
@@ -132,6 +132,11 @@ public class Payment {
 
     public boolean isSettled() {
         return status == PaymentStatus.SUCCEEDED;
+    }
+
+    /** A charge still waiting to be settled or declined. There is at most one per enrolment. */
+    public boolean isOutstanding() {
+        return status == PaymentStatus.PENDING || status == PaymentStatus.FAILED;
     }
 
     public boolean belongsTo(UUID candidateStudentId) {

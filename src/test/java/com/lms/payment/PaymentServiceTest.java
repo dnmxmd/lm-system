@@ -61,7 +61,7 @@ class PaymentServiceTest {
     @Test
     void a_paid_enrollment_raises_a_charge() {
         UUID enrollmentId = UUID.randomUUID();
-        when(payments.findByEnrollmentId(enrollmentId)).thenReturn(Optional.empty());
+        when(payments.findTopByEnrollmentIdOrderByCreatedAtDescIdDesc(enrollmentId)).thenReturn(Optional.empty());
         when(payments.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         paymentService.onEnrollmentCreated(new EnrollmentCreated(enrollmentId, STUDENT, COURSE,
@@ -84,7 +84,7 @@ class PaymentServiceTest {
     @Test
     void an_enrollment_that_already_has_a_charge_does_not_get_a_second_one() {
         UUID enrollmentId = UUID.randomUUID();
-        when(payments.findByEnrollmentId(enrollmentId)).thenReturn(Optional.of(pending()));
+        when(payments.findTopByEnrollmentIdOrderByCreatedAtDescIdDesc(enrollmentId)).thenReturn(Optional.of(pending()));
 
         paymentService.onEnrollmentCreated(new EnrollmentCreated(enrollmentId, STUDENT, COURSE,
                 new BigDecimal("49.99"), "USD", true));

@@ -167,16 +167,16 @@ public class Enrollment {
      * <p>Takes the actual lesson ids rather than a count: credit has to be dropped for lessons the
      * course no longer contains, and a count alone cannot tell which those are.
      */
-    public void reconcileWith(Collection<UUID> currentLessonIds) {
+    public boolean reconcileWith(Collection<UUID> currentLessonIds) {
         if (completedLessonIds.retainAll(Set.copyOf(currentLessonIds))) {
             touch();
         }
-        applyLessonCount(currentLessonIds.size());
+        return applyLessonCount(currentLessonIds.size());
     }
 
     /** Keeps progress honest when the instructor adds or removes lessons after people enrolled. */
-    public void courseLessonCountChanged(int newTotal) {
-        applyLessonCount(newTotal);
+    public boolean courseLessonCountChanged(int newTotal) {
+        return applyLessonCount(newTotal);
     }
 
     /**
@@ -185,19 +185,23 @@ public class Enrollment {
      * <p>Without this the finished-lesson id would sit in the set forever and keep counting, so
      * trimming a course could hand a learner a completion for work that is no longer in it.
      */
-    public void lessonRemovedFromCourse(UUID lessonId, int remainingLessons) {
+    public boolean lessonRemovedFromCourse(UUID lessonId, int remainingLessons) {
         if (completedLessonIds.remove(lessonId)) {
             touch();
         }
-        applyLessonCount(remainingLessons);
+        return applyLessonCount(remainingLessons);
     }
 
     /**
      * Re-derives the status from the progress. It moves in both directions: a course that grew
      * reopens a completed enrolment, and one that shrank can finish an active one.
      * A pending or cancelled enrolment is left alone — its status is not about progress.
+     *
+     * @return true only when this call moved the enrolment from ACTIVE to COMPLETED. The caller
+     *         announces that, and the narrow condition is what stops an already-finished
+     *         enrolment being announced a second time.
      */
-    private void applyLessonCount(int newTotal) {
+    private boolean applyLessonCount(int newTotal) {
         if (newTotal < 1) {
             throw new ValidationException("A course must keep at least one lesson");
         }
@@ -206,11 +210,15 @@ public class Enrollment {
             this.status = EnrollmentStatus.ACTIVE;
             this.completedAt = null;
             touch();
-        } else if (status == EnrollmentStatus.ACTIVE && completedLessonIds.size() >= newTotal) {
+            return false;
+        }
+        if (status == EnrollmentStatus.ACTIVE && completedLessonIds.size() >= newTotal) {
             this.status = EnrollmentStatus.COMPLETED;
             this.completedAt = Instant.now();
             touch();
+            return true;
         }
+        return false;
     }
 
     public int progressPercent() {

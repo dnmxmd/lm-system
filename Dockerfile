@@ -3,12 +3,15 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
 
-# The pom alone first, so dependency download is cached while only sources change.
 COPY pom.xml .
-RUN mvn -B -q dependency:go-offline
-
 COPY src src
-RUN mvn -B clean package -DskipTests
+
+# A cache mount instead of a separate dependency:go-offline layer. That step resolved the whole
+# tree a second time and was slow and incomplete; this keeps ~/.m2 between builds, so only
+# genuinely new dependencies are fetched.
+# -DskipTests skips running the tests but still compiles them, which is deliberate: it catches a
+# test that no longer matches the code it tests.
+RUN --mount=type=cache,target=/root/.m2 mvn -B clean package -DskipTests
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app

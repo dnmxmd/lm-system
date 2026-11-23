@@ -19,39 +19,69 @@ import java.util.UUID;
  */
 public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> {
 
+    /**
+     * Work a relay should pick up: never-claimed events that are due, and events whose claim has
+     * run out because the relay holding it stopped.
+     */
     @Query("""
             select e.id from OutboxEvent e
-            where e.status = :status and e.nextAttemptAt <= :now
+            where (e.status = :pending and e.nextAttemptAt <= :now)
+               or (e.status = :claimed and e.claimExpiresAt <= :now)
             order by e.occurredAt asc
             """)
-    List<UUID> findDueIds(@Param("status") OutboxStatus status, @Param("now") Instant now, Pageable batch);
+    List<UUID> findClaimableIds(@Param("pending") OutboxStatus pending,
+                                @Param("claimed") OutboxStatus claimed,
+                                @Param("now") Instant now, Pageable batch);
 
     /**
-     * Claims one row, atomically.
+     * Takes a lease on one event, atomically.
      *
      * <p>A conditional update rather than a lock hint: it behaves identically on PostgreSQL and
-     * H2, and two instances racing for the same event resolve by one of them getting zero rows
-     * back. Returning 1 means this caller owns the event and nobody else will deliver it.
+     * H2, and two relays racing resolve by one of them getting zero rows back. The row is claimable
+     * if nobody holds it, or if the holder's lease has expired — which is how an event survives
+     * the relay that was carrying it dying.
+     *
+     * @return 1 when this caller now owns the event under {@code claimId}
      */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
-            update OutboxEvent e set e.status = :claimed
-             where e.id = :id and e.status = :pending
+            update OutboxEvent e
+               set e.status = :claimed, e.claimId = :claimId, e.claimExpiresAt = :expiresAt
+             where e.id = :id
+               and ((e.status = :pending and e.nextAttemptAt <= :now)
+                    or (e.status = :claimed and e.claimExpiresAt <= :now))
             """)
-    int claim(@Param("id") UUID id, @Param("pending") OutboxStatus pending,
-              @Param("claimed") OutboxStatus claimed);
+    int claim(@Param("id") UUID id, @Param("claimId") UUID claimId,
+              @Param("expiresAt") Instant expiresAt, @Param("now") Instant now,
+              @Param("pending") OutboxStatus pending, @Param("claimed") OutboxStatus claimed);
 
-    /** Rows a relay claimed and never finished, because the process died mid-delivery. */
+    /**
+     * Finishes a claim, but only the one named.
+     *
+     * <p>This is what stops a late answer from a stalled relay landing on an event somebody else
+     * has since taken over and already published.
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
-            select e.id from OutboxEvent e
-            where e.status = :claimed and e.nextAttemptAt <= :staleBefore
+            update OutboxEvent e
+               set e.status = :published, e.publishedAt = :now,
+                   e.lastError = null, e.claimId = null, e.claimExpiresAt = null
+             where e.id = :id and e.claimId = :claimId
             """)
-    List<UUID> findStaleClaims(@Param("claimed") OutboxStatus claimed,
-                               @Param("staleBefore") Instant staleBefore, Pageable batch);
+    int markPublished(@Param("id") UUID id, @Param("claimId") UUID claimId,
+                      @Param("now") Instant now, @Param("published") OutboxStatus published);
 
-    @Modifying(clearAutomatically = true)
-    @Query("update OutboxEvent e set e.status = :pending where e.id in :ids")
-    int releaseClaims(@Param("ids") List<UUID> ids, @Param("pending") OutboxStatus pending);
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update OutboxEvent e
+               set e.status = :status, e.attempts = :attempts, e.lastError = :error,
+                   e.nextAttemptAt = :nextAttemptAt, e.claimId = null, e.claimExpiresAt = null
+             where e.id = :id and e.claimId = :claimId
+            """)
+    int finishWithFailure(@Param("id") UUID id, @Param("claimId") UUID claimId,
+                          @Param("status") OutboxStatus status, @Param("attempts") int attempts,
+                          @Param("error") String error,
+                          @Param("nextAttemptAt") Instant nextAttemptAt);
 
     Page<OutboxEvent> findByStatusOrderByOccurredAtDesc(OutboxStatus status, Pageable pageable);
 

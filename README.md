@@ -84,10 +84,13 @@ confirm the payment
 ```
 
 Listeners that change data run inside the publisher's transaction, so a rolled-back enrolment never
-leaves a count behind and enrolling never leaves an unraised charge. Listeners that talk to the
-outside world — mail — run **after** the commit and on a separate thread, so nobody is told about
-something that did not happen and a slow mail server holds up neither a transaction nor the
-learner's request.
+leaves a count behind and enrolling never leaves an unraised charge.
+
+Anything with an effect **outside** this process goes through a transactional outbox. The event is
+written to `outbox_event` in the same transaction as the change, and a relay delivers it afterwards
+with backoff, dead-lettering and an audit trail at `GET /api/v1/events`. That way a crash between
+the commit and the notification loses nothing, and mail is never sent with a database connection
+held open. Delivery is at least once — see ADR-006.
 
 The reporting counters move with atomic `UPDATE ... SET x = x + 1` rather than by loading a row and
 saving it back. That matters more than it looks: read-then-write made twelve learners enrolling in
@@ -106,6 +109,11 @@ instructor who created a course, or an admin, can change it.
 **Enrolments** hold progress as the *set of finished lesson ids*, not a counter. Finishing the same
 lesson twice changes nothing, lessons can be done in any order, and if the instructor adds a lesson
 afterwards a completed enrolment reopens instead of staying falsely complete.
+
+**Re-enrolment** follows one rule: a successful, unrefunded purchase grants re-entry. Somebody who
+paid and withdrew walks straight back in — no second charge, no extra revenue, no payment notice.
+Somebody who never paid still owes the same charge; a declined card is put back in play; a refunded
+learner buys the course again and the refund stays on the record. ADR-007 has the full table.
 
 **Payments** are a state machine: `PENDING → SUCCEEDED → REFUNDED`, or `PENDING → FAILED`. Every
 other transition is a `409`. That is what makes a duplicated provider callback harmless. Confirming
@@ -199,6 +207,9 @@ mvn test     # 97 tests, no Docker needed
   cache serialization problems; this project has had one of each.
 - **`LessonContentVisibilityTest`** checks that the public catalog never carries content URLs.
 - **`PaymentRetryTest`** checks that a declined card and a withdrawal both leave a way forward.
+- **`OutboxClaimLeaseTest`**, **`RateLimitTest`** and **`RealInfrastructureTest`** need PostgreSQL
+  and Redis (`docker compose up -d postgres redis`). They are skipped, not failed, without them —
+  so check the per-class counts, not just a green build.
 - **`ArchitectureTest`** enforces the module boundaries described above: no cycles between
   features, every feature's repositories private to it, and no feature reaching into the
   catalog's entities.
@@ -213,7 +224,7 @@ Everything has a working default; override with environment variables.
 | `REDIS_HOST`, `REDIS_PORT` | `localhost:6379` | course detail cache, rate-limit counters |
 | `JWT_SECRET` | placeholder | **change this**; at least 32 bytes |
 | `JWT_ACCESS_TTL` | `PT1H` | |
-| `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW` | `300`, `1m` | per token, or per IP when anonymous |
+| `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW` | `300`, `1m` | per **account** when the token is valid, per IP otherwise |
 | `DB_POOL_SIZE` | `20` | must exceed request threads plus the async notification pool |
 | `SMTP_HOST` | empty | leave empty and mail is written to the log instead of sent |
 
@@ -236,3 +247,5 @@ Searchable in the code as `shortcut:`.
 - `RateLimitFilter` keys anonymous callers on `request.getRemoteAddr()`. Behind a load balancer
   that is the balancer's address, so everyone anonymous shares one bucket. Set
   `server.forward-headers-strategy=framework` once you have a proxy you trust.
+- A learner who withdraws and rejoins repeatedly inflates a course's enrolment count. Revenue is
+  unaffected. Report distinct learners if that ever matters — see ADR-007.

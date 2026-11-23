@@ -1,5 +1,6 @@
 package com.lms.enrollment.service;
 
+import com.lms.common.access.PaymentLedger;
 import com.lms.common.error.ConflictException;
 import com.lms.common.error.ForbiddenException;
 import com.lms.common.error.NotFoundException;
@@ -31,12 +32,14 @@ public class EnrollmentService {
 
     private final EnrollmentRepository enrollments;
     private final CourseService courses;
+    private final PaymentLedger payments;
     private final ApplicationEventPublisher events;
 
     public EnrollmentService(EnrollmentRepository enrollments, CourseService courses,
-                             ApplicationEventPublisher events) {
+                             PaymentLedger payments, ApplicationEventPublisher events) {
         this.enrollments = enrollments;
         this.courses = courses;
+        this.payments = payments;
         this.events = events;
     }
 
@@ -54,17 +57,21 @@ public class EnrollmentService {
 
         // A free course is usable at once; a paid one stays pending until the payment settles.
         // Somebody who withdrew earlier starts the same row over rather than being turned away by
-        // the one-enrolment-per-course rule.
+        // the one-enrolment-per-course rule — and if they already bought the course and were not
+        // refunded, they walk straight back in rather than being charged twice.
+        boolean requiresPayment = !course.free()
+                && existing.map(prior -> !payments.hasSettledPayment(prior.getId())).orElse(true);
+
         Enrollment enrollment = existing
                 .map(cancelled -> {
-                    cancelled.restart(course.lessonCount(), !course.free());
+                    cancelled.restart(course.lessonCount(), requiresPayment);
                     return cancelled;
                 })
                 .orElseGet(() -> enrollments.save(
-                        Enrollment.start(studentId, courseId, course.lessonCount(), !course.free())));
+                        Enrollment.start(studentId, courseId, course.lessonCount(), requiresPayment)));
 
         events.publishEvent(new EnrollmentCreated(enrollment.getId(), studentId, courseId,
-                course.price(), course.currency(), !course.free()));
+                course.price(), course.currency(), requiresPayment));
         return EnrollmentResponse.from(enrollment);
     }
 
@@ -76,8 +83,14 @@ public class EnrollmentService {
         if (!course.contains(lessonId)) {
             throw new ValidationException("Lesson " + lessonId + " is not part of this course");
         }
-        // The instructor may have changed the lesson list since enrolment; reconcile before scoring.
-        enrollment.reconcileWith(course.lessonIds());
+        // The instructor may have changed the lesson list since enrolment; reconcile before
+        // scoring. That can finish the enrolment on its own, in which case there is nothing left
+        // to tick off and the completion is announced here instead.
+        if (enrollment.reconcileWith(course.lessonIds())) {
+            events.publishEvent(new EnrollmentCompleted(enrollment.getId(),
+                    enrollment.getStudentId(), enrollment.getCourseId()));
+            return EnrollmentResponse.from(enrollment);
+        }
 
         boolean firstTime = enrollment.completeLesson(lessonId);
         if (firstTime) {
@@ -102,9 +115,15 @@ public class EnrollmentService {
     @EventListener
     @Transactional
     public void on(LessonRemoved event) {
-        enrollments.findAllByCourseId(event.courseId())
-                .forEach(enrollment ->
-                        enrollment.lessonRemovedFromCourse(event.lessonId(), event.remainingLessons()));
+        enrollments.findAllByCourseId(event.courseId()).forEach(enrollment -> {
+            // Trimming a course can finish somebody who had done everything that is left. That is a
+            // real completion: it has to be counted and the learner has to be told, exactly as if
+            // they had finished the last lesson themselves.
+            if (enrollment.lessonRemovedFromCourse(event.lessonId(), event.remainingLessons())) {
+                events.publishEvent(new EnrollmentCompleted(enrollment.getId(),
+                        enrollment.getStudentId(), enrollment.getCourseId()));
+            }
+        });
     }
 
     /** Called when a payment settles. Idempotent, so a repeated confirmation changes nothing. */

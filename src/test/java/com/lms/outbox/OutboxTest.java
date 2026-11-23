@@ -2,6 +2,7 @@ package com.lms.outbox;
 
 import com.lms.outbox.model.OutboxEvent;
 import com.lms.outbox.model.OutboxStatus;
+import com.lms.outbox.service.ClaimedEvent;
 import com.lms.outbox.service.OutboxConsumer;
 import com.lms.outbox.service.OutboxRelay;
 import com.lms.outbox.service.OutboxStore;
@@ -177,11 +178,11 @@ class OutboxTest {
         String email = register();
         UUID id = find(email).getId();
 
-        List<UUID> first = store.claimDue();
-        List<UUID> second = store.claimDue();
+        List<UUID> first = store.claimDue().stream().map(ClaimedEvent::id).toList();
+        List<UUID> second = store.claimDue().stream().map(ClaimedEvent::id).toList();
 
         assertThat(first).contains(id);
-        assertThat(second).doesNotContain(id);
+        assertThat(second).as("the lease is still held").doesNotContain(id);
     }
 
     @Test

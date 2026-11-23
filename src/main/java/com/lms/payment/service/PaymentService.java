@@ -22,6 +22,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -56,21 +57,33 @@ public class PaymentService {
         if (!event.requiresPayment()) {
             return;
         }
-        payments.findByEnrollmentId(event.enrollmentId()).ifPresentOrElse(
-                existing -> {
-                    // The learner withdrew and came back. Their old charge is reusable unless it
-                    // already went through.
-                    if (existing.getStatus() == PaymentStatus.FAILED) {
-                        existing.retry();
-                    }
-                    log.debug("Payment {} already exists for enrollment {}",
-                            existing.getId(), event.enrollmentId());
-                },
-                () -> {
-                    Payment payment = payments.save(Payment.initiate(event.enrollmentId(), event.studentId(),
-                            event.courseId(), Money.of(event.price(), event.currency())));
-                    log.info("Payment {} is due for enrollment {}", payment.getId(), event.enrollmentId());
-                });
+        Optional<Payment> current = payments.findTopByEnrollmentIdOrderByCreatedAtDescIdDesc(
+                event.enrollmentId());
+
+        if (current.filter(Payment::isOutstanding).isPresent()) {
+            // The learner withdrew and came back without ever paying. The charge they already owe
+            // is reused rather than duplicated; a declined one goes back into play.
+            Payment outstanding = current.get();
+            if (outstanding.getStatus() == PaymentStatus.FAILED) {
+                outstanding.retry();
+            }
+            log.debug("Reusing outstanding payment {} for enrollment {}",
+                    outstanding.getId(), event.enrollmentId());
+            return;
+        }
+        if (current.filter(Payment::isSettled).isPresent()) {
+            // Nothing is owed. Enrolment already knows this, so reaching here means the two
+            // disagree — worth saying out loud rather than quietly charging again.
+            log.warn("Enrollment {} asked for payment but {} has already settled",
+                    event.enrollmentId(), current.get().getId());
+            return;
+        }
+
+        // No payment at all, or the last one was refunded: this rejoin has to be bought again,
+        // and the refunded row stays where it is.
+        Payment payment = payments.save(Payment.initiate(event.enrollmentId(), event.studentId(),
+                event.courseId(), Money.of(event.price(), event.currency())));
+        log.info("Payment {} is due for enrollment {}", payment.getId(), event.enrollmentId());
     }
 
     /**
@@ -120,7 +133,7 @@ public class PaymentService {
 
     @Transactional(readOnly = true)
     public PaymentResponse forEnrollment(UUID enrollmentId, AuthenticatedUser caller) {
-        Payment payment = payments.findByEnrollmentId(enrollmentId)
+        Payment payment = payments.findTopByEnrollmentIdOrderByCreatedAtDescIdDesc(enrollmentId)
                 .orElseThrow(() -> new NotFoundException("No payment is due for enrollment " + enrollmentId));
         requireOwnership(payment, caller);
         return PaymentResponse.from(payment);

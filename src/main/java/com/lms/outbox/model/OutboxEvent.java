@@ -53,6 +53,17 @@ public class OutboxEvent {
     @Column(name = "last_error", length = 1000)
     private String lastError;
 
+    /**
+     * Who holds the current claim. Every update that ends a claim is conditional on this, so a
+     * relay that stalled past its lease cannot overwrite the result of whoever recovered the event.
+     */
+    @Column(name = "claim_id")
+    private UUID claimId;
+
+    /** When the current claim runs out, measured from when it was taken. */
+    @Column(name = "claim_expires_at")
+    private Instant claimExpiresAt;
+
     protected OutboxEvent() {
         // for JPA
     }
@@ -72,10 +83,27 @@ public class OutboxEvent {
         return new OutboxEvent(type, payload);
     }
 
+    /**
+     * A detached copy, used to work out what a failure would do to an event before committing to
+     * it. The rules for backoff and giving up stay in one place, but nothing is written unless the
+     * claim that produced the failure is still the one held.
+     */
+    public static OutboxEvent replayOf(OutboxEvent original) {
+        OutboxEvent copy = new OutboxEvent(original.type, original.payload);
+        copy.id = original.id;
+        copy.status = original.status;
+        copy.attempts = original.attempts;
+        copy.occurredAt = original.occurredAt;
+        copy.nextAttemptAt = original.nextAttemptAt;
+        copy.lastError = original.lastError;
+        return copy;
+    }
+
     public void markPublished() {
         this.status = OutboxStatus.PUBLISHED;
         this.publishedAt = Instant.now();
         this.lastError = null;
+        releaseClaim();
     }
 
     /**
@@ -89,11 +117,13 @@ public class OutboxEvent {
         this.lastError = truncate(error);
         if (attempts >= maxAttempts) {
             this.status = OutboxStatus.FAILED;
+            releaseClaim();
             return;
         }
         this.status = OutboxStatus.PENDING;
         long seconds = Math.min(1L << Math.min(attempts, 20), MAX_BACKOFF.toSeconds());
         this.nextAttemptAt = Instant.now().plusSeconds(seconds);
+        releaseClaim();
     }
 
     /** Puts a dead-lettered event back in the queue, once somebody has fixed whatever broke. */
@@ -102,10 +132,25 @@ public class OutboxEvent {
         this.attempts = 0;
         this.nextAttemptAt = Instant.now();
         this.lastError = null;
+        releaseClaim();
     }
 
-    void claim() {
-        this.status = OutboxStatus.CLAIMED;
+    /** Makes the event due again without forgiving the attempts already spent. */
+    public void clearBackoff() {
+        this.nextAttemptAt = Instant.now();
+    }
+
+    private void releaseClaim() {
+        this.claimId = null;
+        this.claimExpiresAt = null;
+    }
+
+    public UUID getClaimId() {
+        return claimId;
+    }
+
+    public Instant getClaimExpiresAt() {
+        return claimExpiresAt;
     }
 
     private static String truncate(String error) {

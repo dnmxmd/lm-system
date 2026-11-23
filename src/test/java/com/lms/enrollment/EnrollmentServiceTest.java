@@ -3,6 +3,7 @@ package com.lms.enrollment;
 import com.lms.common.error.ConflictException;
 import com.lms.common.error.ForbiddenException;
 import com.lms.common.error.ValidationException;
+import com.lms.common.access.PaymentLedger;
 import com.lms.common.security.AuthenticatedUser;
 import com.lms.common.security.Role;
 import com.lms.course.service.CourseFacts;
@@ -49,13 +50,15 @@ class EnrollmentServiceTest {
     @Mock
     private CourseService courses;
     @Mock
+    private PaymentLedger payments;
+    @Mock
     private ApplicationEventPublisher events;
 
     private EnrollmentService enrollmentService;
 
     @BeforeEach
     void setUp() {
-        enrollmentService = new EnrollmentService(enrollments, courses, events);
+        enrollmentService = new EnrollmentService(enrollments, courses, payments, events);
     }
 
     private static CourseFacts publishedCourse(boolean free, int lessons) {
