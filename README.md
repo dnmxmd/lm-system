@@ -116,17 +116,23 @@ is taken but the learner is locked out.
 
 Everything is under `/api/v1`. Full detail, with request and response shapes, is in Swagger.
 
-| | |
+| Endpoint | Who |
 |---|---|
-| `POST /auth/register`, `POST /auth/login` | open to anyone |
-| `GET /courses`, `GET /courses/{id}`, `GET /courses/by-slug/{slug}` | open to anyone |
-| `POST /courses`, `PUT /courses/{id}`, `/publish`, `/archive`, `/lessons` | instructor, admin |
+| `POST /auth/register`, `POST /auth/login` | anyone |
+| `GET /courses`, `GET /courses/{id}`, `GET /courses/by-slug/{slug}` | anyone — syllabus only; see below |
+| `POST /courses`, `PUT /courses/{id}`, `/publish`, `/archive`, `/lessons` | the owning instructor, or an admin |
 | `POST /enrollments`, `GET /enrollments/me`, `/complete`, `/cancel` | the learner |
-| `GET /enrollments/by-course/{id}` | instructor, admin |
-| `GET /payments/me`, `/by-enrollment/{id}`, `POST /{id}/confirm`, `/fail` | the learner |
+| `GET /enrollments/by-course/{id}` | the instructor who **owns that course**, or an admin |
+| `GET /payments/me`, `/by-enrollment/{id}` | the learner |
 | `POST /payments/{id}/refund` | admin |
-| `GET /analytics/courses`, `/courses/{id}` | instructor, admin |
-| `GET /analytics/overview`, `GET /users`, `PATCH /users/{id}/status` | admin |
+| `GET /analytics/courses/{id}` | the instructor who **owns that course**, or an admin |
+| `GET /analytics/courses`, `GET /analytics/overview` | admin |
+| `GET /users`, `PATCH /users/{id}/status` | admin |
+| `POST /payments/{id}/confirm`, `/fail`, `/retry` | **development profiles only** — see ADR-005 |
+
+Holding the instructor role is not the same as owning a course. Roster and per-course figures are
+scoped to courses you own, because enrolment numbers and revenue are commercially sensitive
+between instructors sharing a platform.
 
 Errors all share one shape, so clients write one parser. `code` is stable; `message` is for people.
 
